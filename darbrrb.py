@@ -257,18 +257,18 @@ class Darbrrb:
     def _run(self, *args):
         try_again = True
         while try_again:
-            self.log.info('running command {!r}'.format(args))
+            self.log.info(f'running command {args!r}')
             try:
-                subprocess.check_call(args)
+                subprocess.run(args, check=True)
                 try_again = False
             except subprocess.CalledProcessError as e:
-                self.log.exception('an error was encountered '
-                                   'when running command {!r}'.format(args))
+                self.log.exception(f'an error was encountered '
+                                   f'when running command {args!r}')
                 valid_input = False
                 while not valid_input:
-                    the_input = input('Something went wrong '
-                                      'when running command {!r}. '
-                                      'Try again? [Y/n] '.format(args))
+                    the_input = input(f'Something went wrong '
+                                      f'when running command {args!r}. '
+                                      f'Try again? [Y/n] ')
                     if the_input == '':
                         valid_input = True
                         try_again = True
@@ -422,12 +422,11 @@ About the files that may be on this disc:
             dirs = glob.glob(os.path.join(self.settings.scratch_dir,
                                           basename + '-*'))
             last_disc_dir = sorted(dirs)[-1]
-            disc_in_last_set_dir = '{}{:03d}'.format(last_disc_dir[:-3],
-                                                     disc_number_in_set_zb + 1)
+            disc_in_last_set_dir = f'{last_disc_dir[:-3]}{disc_number_in_set_zb + 1:03d}'
             return disc_in_last_set_dir
 
     def disc_dir(self, disc):
-        return '__disc{:04d}'.format(disc)
+        return f'__disc{disc:04d}'
 
     def disc_dirs(self):
         return sorted(glob.glob('__disc*'))
@@ -436,9 +435,7 @@ About the files that may be on this disc:
         # Max ISO 9660 vol id length is 32. Leave room for numbers and 2 dashes.
         # +1: These numbers are 0-based, but we want the ones in the title 1-based.
         # If you change the format here, change code above in last_set_directory!
-        return "{}-{:04d}-{:03d}".format(basename[:(32-4-3-2)],
-                                         set_number_zb + 1,
-                                         disc_in_set_number_zb + 1)
+        return f"{basename[:(32-4-3-2)]}-{set_number_zb + 1:04d}-{disc_in_set_number_zb + 1:03d}"
         
     def disc_title_for_slice(self, basename, dar_slice_number):
         set_number = math.floor((dar_slice_number - 1) /
@@ -489,7 +486,7 @@ About the files that may be on this disc:
         min_number = max_number - nslices + 1
         parfilename = self._par_filename(basename, min_number, max_number)
         self._run(*(['parchive',
-                     '-n{}'.format(self.settings.parity_discs),
+                     f'-n{self.settings.parity_discs}',
                      'a', parfilename,
                 ] + dar_files))
         return parfilename
@@ -505,8 +502,8 @@ About the files that may be on this disc:
             destination = os.path.join(self.settings.scratch_dir,
                     self.disc_title_for_slice_and_disc(basename, slice_number,
                                                        disc_in_set_number))
-            self.log.info('not actually burning: moving files from {} to ' \
-                    '{}'.format(dir, destination))
+            self.log.info(f'not actually burning: moving files from {dir} to '
+                    f'{destination}')
             os.mkdir(destination)
             for f in glob.glob(os.path.join(dir, '*')):
                 shutil.move(f, os.path.join(destination, os.path.basename(f)))
@@ -545,15 +542,14 @@ About the files that may be on this disc:
         if size_if_we_dont_burn_KiB > self.settings.disc_size_KiB or \
                 happening == 'last_slice':
             for i, d in enumerate(self.disc_dirs()):
-                self.log.info("burning from {}".format(d))
+                self.log.info(f"burning from {d}")
                 self.wait_for_empty_disc()
                 self.burn(basename, number, i, d, happening)
                 for fn in glob.glob(os.path.join(d, '*')):
                     os.unlink(fn)
 
     def _slice_name(self, basename, number, extension):
-        return '{{}}.{{:0{}d}}.{{}}'.format(self.settings.digits).format(
-            basename, number, extension)
+        return f'{basename}.{number:0{self.settings.digits}d}.{extension}'
 
     def _number_from_slice_name_ob(self, filename):
         return int(filename.split('.')[-2], 10)
@@ -928,18 +924,13 @@ class TestDiscTitle(unittest.TestCase):
                     should_name = 'fnord-%04d-%03d' % (set, disc+1)
                     is_name = self.d.disc_title_for_slice_and_disc('fnord', slice, disc)
                     self.assertEqual(is_name, should_name,
-                            'with {s.data_discs} data discs, ' \
-                            '{s.slices_per_disc} slices per disc, ' \
-                            '{cs} complete sets, {sils} slices in last set, ' \
-                            'on set {set}, slice {slice}, ' \
-                            'happening {happening}, calls was {calls}, ' \
-                            'disc title should be ' \
-                            '{should_name}, but is {is_name}'.format(
-                                s=self.settings,
-                                cs=complete_sets, sils=slices_in_last_set,
-                                set=set, slice=slice, happening=happening,
-                                calls=calls,
-                                should_name=should_name, is_name=is_name))
+                            f'with {self.settings.data_discs} data discs, '
+                            f'{self.settings.slices_per_disc} slices per disc, '
+                            f'{complete_sets} complete sets, {slices_in_last_set} slices in last set, '
+                            f'on set {set}, slice {slice}, '
+                            f'happening {happening}, calls was {calls}, '
+                            f'disc title should be '
+                            f'{should_name}, but is {is_name}')
 
     def testFourPlusOne(self):
         self.settings.data_discs = 4
@@ -1459,7 +1450,7 @@ if __name__ == '__main__':
             loglevel = logging.DEBUG
             testing = True
         else:
-            raise Exception('unknown switch {}'.format(o))
+            raise Exception(f'unknown switch {o}')
     # style only influences how format is interpreted, not also how values are
     # interpolated into log messages. source: Python 3.2
     # logging/__init__.py:317, LogRecord class, getMessage method.
@@ -1473,10 +1464,10 @@ if __name__ == '__main__':
     # dar expects its stdin and stdout to be a terminal so we will
     # make a log file for our messages rather than depend on
     # redirection
-    logfile = logging.FileHandler('darbrrb.log.{}'.format(os.getpid()))
+    logfile = logging.FileHandler(f'darbrrb.log.{os.getpid()}')
     logfile.setFormatter(fmt)
     root_logger.addHandler(logfile)
-    log = logging.getLogger('__main__'.format(os.getpid()))
+    log = logging.getLogger('__main__')
     log.debug('called with args %r', sys.argv)
     if testing:
         # strip off switches: they are not for unittest.main
