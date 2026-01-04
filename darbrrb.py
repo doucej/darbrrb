@@ -170,17 +170,13 @@ import tempfile
 import contextlib
 import unittest
 import logging
-import io
 import re
 import itertools
 import random
 import math
 import pickle
 import base64
-try:
-    from unittest.mock import Mock, patch, sentinel, call
-except ImportError:
-    from mock import Mock, patch, sentinel, call
+from unittest.mock import Mock, patch, sentinel, call
 
 
 def usage(settings):
@@ -528,7 +524,7 @@ About the files that may be on this disc:
                            if parity_volume_re.match(f)]
             for d in self.disc_dirs():
                 self._copy(parfilename, os.path.join(d, parfilename))
-                with io.open(os.path.join(d, 'README.txt'), 'wt') as readme:
+                with open(os.path.join(d, 'README.txt'), 'wt') as readme:
                     readme.write(self.readme(basename))
                 this_program = os.path.basename(self.progname)
                 self._copy(this_program, os.path.join(d, this_program))
@@ -1268,7 +1264,6 @@ class TestWholeRestore(UsesTempScratchDir):
                                               min_zb+1, max_zb+1)
         # cheat: we don't touch the par volume files. only the real
         # parchive actually needs them!
-#        os.system('bash')
 
         
             
