@@ -199,12 +199,13 @@ except ImportError:
 
 
 def usage(settings: Settings) -> None:
-    print(""" 
-This script makes compressed, encrypted backups with {s.slice_size_MiB:0.2f} MiB \
+    optical_status = "available" if OPTICAL_AVAILABLE else "not available"
+    print(f""" 
+This script makes compressed, encrypted backups with {settings.slice_size_MiB:0.2f} MiB \
 slices striped
-across sets of {s.total_set_count} {s.disc_size_MiB} MiB optical discs, \
-each set containing {s.data_discs} data disc(s)
-and {s.parity_discs} parity disc(s). It \
+across sets of {settings.total_set_count} {settings.disc_size_MiB} MiB optical discs, \
+each set containing {settings.data_discs} data disc(s)
+and {settings.parity_discs} parity disc(s). It \
 requires the following software (or later versions):
 Python 3.2; mock 1.0 (included in Python 3.3); dar 2.5.4*; parchive 1.1;
 growisofs 7.1; genisoimage 1.1.11.
@@ -218,15 +219,15 @@ branch_2.5.x branch of dar yourself. See
 If you are not using encryption, any recent dar will do (2.4.8 did
 fine without encryption, for example).
 
-When backing up, the directory {s.scratch_dir!r} should have 
-{s.scratch_free_needed_MiB} MiB of space free. \
+When backing up, the directory {settings.scratch_dir!r} should have 
+{settings.scratch_free_needed_MiB} MiB of space free. \
 When restoring, copy this script off of the optical
 disc first; you'll need to switch optical discs during the backup.
 
 If you don't like any of these settings, change this script. The
 settings are toward the top.
 
-Usage: python3 {progname} [-v] [-n] dar <dar parameters>
+Usage: python3 {sys.argv[0]} [-v] [-n] [--optical] [optical options] dar <dar parameters>
 
 Dar parameters of note:
     Creating archive:   -c <archive basename> -R <dir with files to backup>
@@ -238,12 +239,28 @@ fancy: only use the ones that tell dar which mode to operate in, and
 which files to archive.  Otherwise this script will not form a
 complete record of how dar was run.
 
-The -v switch, before dar, means to be verbose and show the dar command
-being executed and the darrc used. The -n switch, before dar, means don't
-burn any discs: just make directories containing the files that would have
-been burned. (This can use much more scratch space.)
+Switches:
+  -v                    Be verbose and show the dar command and darrc used
+  -n                    Don't actually burn discs (just make directories)
+  -t                    Run unit tests
+  
+Optical disc automation (Linux only, currently {optical_status}):
+  --optical             Enable automated disc handling
+  --optical-device      Device path (default: /dev/sr0)
+  --optical-mountpoint  Mount point (default: /mnt/darbrrb_disc)
+  --auto-continue       Auto-continue when valid disc inserted
+  --manual-continue     Always prompt before continuing (default)
+  --force-overwrite     Automatically overwrite non-blank discs
+  --no-overwrite        Reject non-blank discs without prompting
 
-""".format(s=settings, progname=sys.argv[0]),
+When optical automation is enabled, the script will:
+  - Automatically eject discs when full
+  - Detect disc insertion
+  - Format blank BD-RE discs with UDF
+  - Validate discs against the current backup set
+  - Prompt before overwriting discs with existing data (unless overridden)
+
+""",
         file=sys.stderr)
 
 

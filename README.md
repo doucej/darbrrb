@@ -67,3 +67,51 @@ parchive. dar provides a hook, where a program can be run every time dar
 finishes a slice; darbrrb hooks into this to make the redundancy data
 at the proper times, and burn discs using growisofs.
 
+Optical Disc Automation (Linux only)
+-------------------------------------
+
+darbrrb now includes an optional optical disc automation module that
+streamlines multi-disc backups by handling disc preparation, detection,
+and transitions automatically. When enabled, it:
+
+- **Auto-ejects** discs when full
+- **Detects** disc insertion automatically via polling
+- **Formats** blank BD-RE discs with UDF filesystem
+- **Validates** discs against the current backup set
+- **Tracks** backup set metadata to prevent mixing disc sets
+- **Prompts** before overwriting discs with existing data (configurable)
+
+### Requirements
+
+For optical automation, you need:
+- Linux system with optical drive
+- `eject` command
+- `mkudffs` (from udftools package)
+- `blkid` (usually pre-installed)
+- `dvd+rw-mediainfo` (optional, from dvd+rw-tools)
+
+### Usage
+
+Enable optical automation with the `--optical` flag:
+
+```bash
+python3 darbrrb.py -v --optical dar -c mybackup -R /path/to/backup
+```
+
+Additional optical options:
+- `--auto-continue`: Automatically continue when a valid disc is inserted
+- `--force-overwrite`: Automatically overwrite non-blank discs
+- `--no-overwrite`: Reject non-blank discs without prompting
+- `--optical-device /dev/sr1`: Specify a different optical drive
+- `--optical-mountpoint /mnt/custom`: Specify a custom mount point
+
+### Workflow
+
+1. Insert a blank BD-RE disc
+2. The script automatically formats it with UDF
+3. Writes backup data to the disc
+4. Ejects the disc when full
+5. Waits for the next disc to be inserted
+6. Validates the new disc (blank or matching backup set)
+7. Continues automatically or prompts as configured
+
