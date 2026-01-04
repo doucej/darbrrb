@@ -158,6 +158,14 @@ class Settings:
 
     # -n switch turns this off
     actually_burn = True
+    
+    # Optical disc handling settings (Linux-only)
+    use_optical_automation = False  # Enable optical disc automation
+    optical_device = '/dev/sr0'
+    optical_mountpoint = '/mnt/darbrrb_disc'
+    optical_auto_continue = False  # Auto-continue when valid disc inserted
+    optical_force_overwrite = False  # Force overwrite non-blank discs
+    optical_no_overwrite = False  # Reject non-blank discs
 
 
 
@@ -181,6 +189,13 @@ import pickle
 import base64
 from time import sleep
 from unittest.mock import Mock, patch, sentinel, call
+
+# Try to import optical module (Linux-only feature)
+try:
+    from optical import OpticalDiscHandler
+    OPTICAL_AVAILABLE = True
+except ImportError:
+    OPTICAL_AVAILABLE = False
 
 
 def usage(settings: Settings) -> None:
@@ -257,6 +272,23 @@ class Darbrrb:
         self.progname = progname
         self.progopts = progopts
         self.log = logging.getLogger('darbrrb')
+        
+        # Initialize optical disc handler if available and enabled
+        self.optical_handler = None
+        if settings.use_optical_automation and OPTICAL_AVAILABLE:
+            try:
+                self.optical_handler = OpticalDiscHandler(
+                    device=settings.optical_device,
+                    mountpoint=settings.optical_mountpoint,
+                    auto_continue=settings.optical_auto_continue,
+                    force_overwrite=settings.optical_force_overwrite,
+                    no_overwrite=settings.optical_no_overwrite
+                )
+                self.log.info("Optical disc automation enabled")
+            except Exception as e:
+                self.log.error(f"Failed to initialize optical handler: {e}")
+        elif settings.use_optical_automation and not OPTICAL_AVAILABLE:
+            self.log.warning("Optical automation requested but module not available")
 
     def _run(self, *args: str) -> None:
         try_again = True
@@ -393,11 +425,39 @@ About the files that may be on this disc:
             with working_directory(self.settings.scratch_dir):
                 self._run('dar', *(args + ('-B', darrc_file.name)))
 
-    def wait_for_empty_disc(self):
-        # There are a hundred cooler ways to do this; in 2013, I don't know of
-        # one that works on many distros and OSes, much less ten years from
-        # now. But you'll probably still be able to press enter, some way.
-        if self.settings.actually_burn:
+    def wait_for_empty_disc(self, basename='backup'):
+        """
+        Wait for an empty disc to be inserted.
+        
+        If optical automation is enabled, automatically handles disc ejection,
+        detection, formatting, and validation. Otherwise, prompts the user.
+        
+        Args:
+            basename: The backup set basename for metadata tracking
+        """
+        if not self.settings.actually_burn:
+            return
+            
+        # Use optical automation if available
+        if self.optical_handler:
+            self.log.info("Using optical disc automation")
+            
+            # Eject any existing disc
+            self.optical_handler.eject_disc()
+            
+            # Wait for disc insertion
+            if not self.optical_handler.wait_for_disc():
+                self.log.error("Timeout waiting for disc")
+                if not self.settings.optical_auto_continue:
+                    input("Please insert a disc and press enter:")
+            
+            # Validate and prepare disc
+            if not self.optical_handler.validate_disc_for_backup(basename):
+                self.log.error("Disc validation failed")
+                # Fall back to manual prompt
+                input("Please insert a valid disc and press enter:")
+        else:
+            # Traditional manual prompt
             input("press enter when you have inserted an empty disc:")
 
     def written_disc_directory(self, disc_title):
@@ -547,8 +607,14 @@ About the files that may be on this disc:
                 happening == 'last_slice':
             for i, d in enumerate(self.disc_dirs()):
                 self.log.info(f"burning from {d}")
-                self.wait_for_empty_disc()
+                self.wait_for_empty_disc(basename)
                 self.burn(basename, number, i, d, happening)
+                
+                # Eject disc after successful burn if using optical automation
+                if self.optical_handler and self.settings.actually_burn:
+                    self.log.info("Ejecting disc after burn")
+                    self.optical_handler.eject_disc()
+                
                 for fn in glob.glob(os.path.join(d, '*')):
                     os.unlink(fn)
 
@@ -1483,6 +1549,24 @@ been burned. (This can use much more scratch space.)
                         help="don't actually burn discs")
     parser.add_argument('-t', action='store_true',
                         help='run tests')
+    
+    # Optical disc automation arguments (Linux-only)
+    optical_group = parser.add_argument_group('optical disc automation (Linux only)')
+    optical_group.add_argument('--optical', action='store_true',
+                              help='enable optical disc automation')
+    optical_group.add_argument('--optical-device', default='/dev/sr0',
+                              help='optical drive device (default: /dev/sr0)')
+    optical_group.add_argument('--optical-mountpoint', default='/mnt/darbrrb_disc',
+                              help='disc mount point (default: /mnt/darbrrb_disc)')
+    optical_group.add_argument('--auto-continue', action='store_true',
+                              help='automatically continue when valid disc inserted')
+    optical_group.add_argument('--manual-continue', action='store_true',
+                              help='always prompt before continuing (default)')
+    optical_group.add_argument('--force-overwrite', action='store_true',
+                              help='automatically overwrite non-blank discs')
+    optical_group.add_argument('--no-overwrite', action='store_true',
+                              help='reject non-blank discs without prompting')
+    
     parser.add_argument('command', nargs='?',
                         help='command to run (dar, _create, _extract, _list)')
     parser.add_argument('remaining', nargs=argparse.REMAINDER,
@@ -1513,6 +1597,28 @@ been burned. (This can use much more scratch space.)
                 print('not actually burning', end=' * ')
             print('\n')
         sleep(5)
+    
+    # Handle optical disc automation flags
+    if hasattr(args, 'optical') and args.optical:
+        s.use_optical_automation = True
+        s.optical_device = args.optical_device
+        s.optical_mountpoint = args.optical_mountpoint
+        s.optical_auto_continue = args.auto_continue and not args.manual_continue
+        s.optical_force_overwrite = args.force_overwrite
+        s.optical_no_overwrite = args.no_overwrite
+        
+        # Validate conflicting flags
+        if s.optical_force_overwrite and s.optical_no_overwrite:
+            print("Error: --force-overwrite and --no-overwrite are mutually exclusive",
+                  file=sys.stderr)
+            sys.exit(1)
+        
+        # Check if optical module is available
+        if not OPTICAL_AVAILABLE:
+            print("Warning: Optical automation requested but optical module not available",
+                  file=sys.stderr)
+            print("Make sure optical.py is in the same directory as darbrrb.py",
+                  file=sys.stderr)
     
     # Convert args to opts format for backward compatibility with Darbrrb class
     opts = []
