@@ -22,6 +22,8 @@
 #
 # Imports are below the settings.
 
+from __future__ import annotations
+
 darrc_template = """
 --min-digits={settings.digits}
 --slice {settings.slice_size_KiB:0.0f}K
@@ -160,6 +162,8 @@ class Settings:
 
 
 from itertools import chain
+from typing import Iterator, Optional, Tuple, List, Any
+from pathlib import Path
 import sys
 import os
 import shutil
@@ -179,7 +183,7 @@ import base64
 from unittest.mock import Mock, patch, sentinel, call
 
 
-def usage(settings):
+def usage(settings: Settings) -> None:
     print(""" 
 This script makes compressed, encrypted backups with {s.slice_size_MiB:0.2f} MiB \
 slices striped
@@ -254,7 +258,7 @@ class Darbrrb:
         self.progopts = progopts
         self.log = logging.getLogger('darbrrb')
 
-    def _run(self, *args):
+    def _run(self, *args: str) -> None:
         try_again = True
         while try_again:
             self.log.info(f'running command {args!r}')
@@ -425,19 +429,19 @@ About the files that may be on this disc:
             disc_in_last_set_dir = f'{last_disc_dir[:-3]}{disc_number_in_set_zb + 1:03d}'
             return disc_in_last_set_dir
 
-    def disc_dir(self, disc):
+    def disc_dir(self, disc: int) -> str:
         return f'__disc{disc:04d}'
 
-    def disc_dirs(self):
+    def disc_dirs(self) -> List[str]:
         return sorted(glob.glob('__disc*'))
 
-    def disc_title(self, basename, set_number_zb, disc_in_set_number_zb):
+    def disc_title(self, basename: str, set_number_zb: int, disc_in_set_number_zb: int) -> str:
         # Max ISO 9660 vol id length is 32. Leave room for numbers and 2 dashes.
         # +1: These numbers are 0-based, but we want the ones in the title 1-based.
         # If you change the format here, change code above in last_set_directory!
         return f"{basename[:(32-4-3-2)]}-{set_number_zb + 1:04d}-{disc_in_set_number_zb + 1:03d}"
         
-    def disc_title_for_slice(self, basename, dar_slice_number):
+    def disc_title_for_slice(self, basename: str, dar_slice_number: int) -> str:
         set_number = math.floor((dar_slice_number - 1) /
                 self.settings.slices_per_set)
         disc_in_set_number = ((dar_slice_number - 1) %
