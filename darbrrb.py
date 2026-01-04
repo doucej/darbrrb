@@ -164,7 +164,7 @@ import sys
 import os
 import shutil
 import glob
-import getopt
+import argparse
 import subprocess
 import tempfile
 import contextlib
@@ -1425,32 +1425,100 @@ class TestPartialRestoreNineteenPlusSeven(TestPartialRestore):
 
 if __name__ == '__main__':
     s = Settings()
+    
+    # Create argument parser
+    parser = argparse.ArgumentParser(
+        add_help=False,  # We'll handle help ourselves
+        usage='python3 %(prog)s [-h] [-v] [-n] [-t] {dar,_create,_extract,_list} ...',
+        description=f"""
+This script makes compressed, encrypted backups with {s.slice_size_MiB:0.2f} MiB slices striped
+across sets of {s.total_set_count} {s.disc_size_MiB} MiB optical discs, each set containing {s.data_discs} data disc(s)
+and {s.parity_discs} parity disc(s). It requires the following software (or later versions):
+Python 3.2; mock 1.0 (included in Python 3.3); dar 2.5.4*; parchive 1.1;
+growisofs 7.1; genisoimage 1.1.11.
+
+* If you are encrypting, you need change 8e64f413. If you have dar
+2.5.4 or later, you have change 8e64f413. If you don't (2.5.4 is not
+yet released as of March 2016), you will need to build the
+branch_2.5.x branch of dar yourself. See
+<https://sourceforge.net/p/dar/bugs/183/> and
+<https://sourceforge.net/p/dar/code/ci/8e64f413deb046064156792078060d2ee6ea4e5c/>.
+If you are not using encryption, any recent dar will do (2.4.8 did
+fine without encryption, for example).
+
+When backing up, the directory {s.scratch_dir!r} should have 
+{s.scratch_free_needed_MiB} MiB of space free. When restoring, copy this script off of the optical
+disc first; you'll need to switch optical discs during the backup.
+
+If you don't like any of these settings, change this script. The
+settings are toward the top.
+
+Dar parameters of note:
+    Creating archive:   -c <archive basename> -R <dir with files to backup>
+    Extracting archive: -x <archive basename>
+
+You get 23 characters for the archive basename. (Sorry, that's ISO
+9660.) See dar(1) about parameters you can give to dar. Don't get
+fancy: only use the ones that tell dar which mode to operate in, and
+which files to archive. Otherwise this script will not form a
+complete record of how dar was run.
+
+The -v switch, before dar, means to be verbose and show the dar command
+being executed and the darrc used. The -n switch, before dar, means don't
+burn any discs: just make directories containing the files that would have
+been burned. (This can use much more scratch space.)
+""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument('-h', '--help', action='store_true',
+                        help='show this help message and exit')
+    parser.add_argument('-v', action='count', default=0,
+                        help='increase verbosity')
+    parser.add_argument('-n', action='store_true',
+                        help="don't actually burn discs")
+    parser.add_argument('-t', action='store_true',
+                        help='run tests')
+    parser.add_argument('command', nargs='?',
+                        help='command to run (dar, _create, _extract, _list)')
+    parser.add_argument('remaining', nargs=argparse.REMAINDER,
+                        help='additional arguments for the command')
+    
+    # Handle no arguments case
     if len(sys.argv) < 2:
         usage(s)
         sys.exit(1)
-    opts, remaining = getopt.getopt(sys.argv[1:], 'hvnt', ['help'])
-    loglevel = logging.WARNING
-    testing = False
-    for o, v in opts:
-        if o == '-h' or o == '--help':
-            usage(s)
-            sys.exit(1)
-        elif o == '-v':
-            loglevel -= 10
-        elif o == '-n':
-            s.actually_burn = False
-            # warn user
-            from time import sleep
-            for i in range(25):
-                for j in range(4):
-                    print('not actually burning', end=' * ')
-                print('\n')
-            sleep(5)
-        elif o == '-t':
-            loglevel = logging.DEBUG
-            testing = True
-        else:
-            raise Exception(f'unknown switch {o}')
+    
+    args = parser.parse_args()
+    
+    # Handle help
+    if args.help:
+        usage(s)
+        sys.exit(1)
+    
+    # Set log level based on verbosity
+    loglevel = logging.WARNING - (args.v * 10)
+    testing = args.t
+    
+    # Handle -n flag
+    if args.n:
+        s.actually_burn = False
+        # warn user
+        from time import sleep
+        for i in range(25):
+            for j in range(4):
+                print('not actually burning', end=' * ')
+            print('\n')
+        sleep(5)
+    
+    # Convert args to opts format for backward compatibility with Darbrrb class
+    opts = []
+    if args.v:
+        for _ in range(args.v):
+            opts.append(('-v', ''))
+    if args.n:
+        opts.append(('-n', ''))
+    
     # style only influences how format is interpreted, not also how values are
     # interpolated into log messages. source: Python 3.2
     # logging/__init__.py:317, LogRecord class, getMessage method.
@@ -1471,23 +1539,23 @@ if __name__ == '__main__':
     log.debug('called with args %r', sys.argv)
     if testing:
         # strip off switches: they are not for unittest.main
-        sys.argv = [sys.argv[0]] + remaining
+        sys.argv = [sys.argv[0]] + args.remaining
         sys.exit(unittest.main())
     d = Darbrrb(s, __file__, opts)
     try:
-        if remaining[0] == 'dar':
+        if args.command == 'dar':
             os.environ['DARBRRB_ORIGINAL_ARGV'] = base64.b64encode(
                 pickle.dumps(sys.argv, protocol=0)).decode('UTF-8')
             d.ensure_scratch()
-            d.dar(*remaining[1:])
-        elif remaining[0] == '_create':
-            d._create(*remaining[1:])
-        elif remaining[0] == '_extract':
-            d._extract(*remaining[1:])
-        elif remaining[0] == '_list':
-            d._list(*remaining[1:])
+            d.dar(*args.remaining)
+        elif args.command == '_create':
+            d._create(*args.remaining)
+        elif args.command == '_extract':
+            d._extract(*args.remaining)
+        elif args.command == '_list':
+            d._list(*args.remaining)
         else:
-            raise Exception("unknown subcommand", remaining)
+            raise Exception("unknown subcommand", args.command)
         log.debug('execution ended without exception')
     except Exception as e:
         log.exception('execution ended abnormally')
