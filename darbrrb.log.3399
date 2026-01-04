@@ -1,0 +1,60 @@
+darbrrb 3399 [2026-01-04 17:22:23,491] __main__: called with args ['darbrrb.py', '-t']
+darbrrb 3399 [2026-01-04 17:22:23,498] darbrrb: burning from __disc0001
+darbrrb 3399 [2026-01-04 17:22:23,498] darbrrb: burning from __disc0002
+darbrrb 3399 [2026-01-04 17:22:23,499] darbrrb: burning from __disc0003
+darbrrb 3399 [2026-01-04 17:22:23,499] darbrrb: burning from __disc0004
+darbrrb 3399 [2026-01-04 17:22:23,499] darbrrb: burning from __disc0005
+darbrrb 3399 [2026-01-04 17:22:23,697] darbrrb: Contents of /tmp/tmp1sau6jwcdarbrrb_test/darrc follow:
+
+        --min-digits=6
+        --slice 48280K
+        # make crypto block size larger to reduce 
+        # likelihood of duplicate ciphertext
+        --crypto-block 131072
+        # DO NOT specify the AES key here: this script is burned on every
+        # backup disc, in the clear
+        --key aes:
+        # don't back up caches, e.g. Firefox cache
+        --cache-directory-tagging
+        -v
+        create:
+        --compression=bzip2
+        -E "python3 /tmp/tmp1sau6jwcdarbrrb_test/darbrrb.py  _create %p %b %n %e %c"
+        extract:
+        -O
+        -E "python3 /tmp/tmp1sau6jwcdarbrrb_test/darbrrb.py  _extract %p %b %n %e %c"
+        list:
+        -E "python3 /tmp/tmp1sau6jwcdarbrrb_test/darbrrb.py  _list %p %b %n %e %c"
+        test:
+        -E "python3 /tmp/tmp1sau6jwcdarbrrb_test/darbrrb.py  _test %p %b %n %e %c"
+        isolate:
+        -E "python3 /tmp/tmp1sau6jwcdarbrrb_test/darbrrb.py  _isolate %p %b %n %e %c"
+        
+
+darbrrb 3399 [2026-01-04 17:22:23,698] darbrrb: Contents of /tmp/tmp4vty90gadarbrrb_test/darrc follow:
+
+        --min-digits=6
+        --slice 48280K
+        # make crypto block size larger to reduce 
+        # likelihood of duplicate ciphertext
+        --crypto-block 131072
+        # DO NOT specify the AES key here: this script is burned on every
+        # backup disc, in the clear
+        --key aes:
+        # don't back up caches, e.g. Firefox cache
+        --cache-directory-tagging
+        -v
+        create:
+        --compression=bzip2
+        -E "python3 /tmp/tmp4vty90gadarbrrb_test/darbrrb.py  _create %p %b %n %e %c"
+        extract:
+        -O
+        -E "python3 /tmp/tmp4vty90gadarbrrb_test/darbrrb.py  _extract %p %b %n %e %c"
+        list:
+        -E "python3 /tmp/tmp4vty90gadarbrrb_test/darbrrb.py  _list %p %b %n %e %c"
+        test:
+        -E "python3 /tmp/tmp4vty90gadarbrrb_test/darbrrb.py  _test %p %b %n %e %c"
+        isolate:
+        -E "python3 /tmp/tmp4vty90gadarbrrb_test/darbrrb.py  _isolate %p %b %n %e %c"
+        
+
