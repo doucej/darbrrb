@@ -1,2 +1,7 @@
 *~
 __pycache__
+darbrrb.log.*
+.coverage
+htmlcov/
+.pytest_cache/
+*.pyc
