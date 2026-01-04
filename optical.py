@@ -30,8 +30,9 @@ import logging
 import time
 import os
 import json
+import tempfile
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Optional
 from dataclasses import dataclass
 
 
@@ -111,7 +112,8 @@ class OpticalDiscHandler:
         """
         Wait for a disc to be inserted.
         
-        Polls /sys/block/sr0 for media change events.
+        Polls /sys/block/{device_name} for media change events, where
+        device_name is dynamically extracted from the device path.
         
         Args:
             timeout: Maximum time to wait in seconds (default: 300)
@@ -220,7 +222,6 @@ class OpticalDiscHandler:
             temp_mount = None
             try:
                 # Create a temporary mount point
-                import tempfile
                 temp_mount = tempfile.mkdtemp(prefix='darbrrb_detect_')
                 
                 subprocess.run(

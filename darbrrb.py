@@ -199,7 +199,6 @@ except ImportError:
 
 
 def usage(settings: Settings) -> None:
-    optical_status = "available" if OPTICAL_AVAILABLE else "not available"
     print(f""" 
 This script makes compressed, encrypted backups with {settings.slice_size_MiB:0.2f} MiB \
 slices striped
@@ -244,7 +243,7 @@ Switches:
   -n                    Don't actually burn discs (just make directories)
   -t                    Run unit tests
   
-Optical disc automation (Linux only, currently {optical_status}):
+Optical disc automation (Linux only, currently {'available' if OPTICAL_AVAILABLE else 'not available'}):
   --optical             Enable automated disc handling
   --optical-device      Device path (default: /dev/sr0)
   --optical-mountpoint  Mount point (default: /mnt/darbrrb_disc)
@@ -1620,6 +1619,7 @@ been burned. (This can use much more scratch space.)
         s.use_optical_automation = True
         s.optical_device = args.optical_device
         s.optical_mountpoint = args.optical_mountpoint
+        # auto_continue is enabled only if --auto-continue is specified AND --manual-continue is not
         s.optical_auto_continue = args.auto_continue and not args.manual_continue
         s.optical_force_overwrite = args.force_overwrite
         s.optical_no_overwrite = args.no_overwrite
