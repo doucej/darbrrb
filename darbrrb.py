@@ -162,8 +162,7 @@ class Settings:
 
 
 from itertools import chain
-from typing import Iterator, Optional, Tuple, List, Any
-from pathlib import Path
+from typing import List
 import sys
 import os
 import shutil
@@ -180,6 +179,7 @@ import random
 import math
 import pickle
 import base64
+from time import sleep
 from unittest.mock import Mock, patch, sentinel, call
 
 
@@ -1508,7 +1508,6 @@ been burned. (This can use much more scratch space.)
     if args.n:
         s.actually_burn = False
         # warn user
-        from time import sleep
         for i in range(25):
             for j in range(4):
                 print('not actually burning', end=' * ')
@@ -1558,8 +1557,11 @@ been burned. (This can use much more scratch space.)
             d._extract(*args.remaining)
         elif args.command == '_list':
             d._list(*args.remaining)
+        elif args.command is None:
+            usage(s)
+            sys.exit(1)
         else:
-            raise Exception("unknown subcommand", args.command)
+            raise Exception(f"unknown subcommand: {args.command}")
         log.debug('execution ended without exception')
     except Exception as e:
         log.exception('execution ended abnormally')
