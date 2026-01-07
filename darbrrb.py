@@ -27,12 +27,7 @@ from __future__ import annotations
 darrc_template = """
 --min-digits={settings.digits}
 --slice {settings.slice_size_KiB:0.0f}K
-# make crypto block size larger to reduce 
-# likelihood of duplicate ciphertext
---crypto-block 131072
-# DO NOT specify the AES key here: this script is burned on every
-# backup disc, in the clear
---key aes:
+{encryption_settings}
 # don't back up caches, e.g. Firefox cache
 --cache-directory-tagging
 -v
@@ -75,7 +70,7 @@ class Settings:
     slices_per_disc = 500
 
 # How much space is on a disc?
-    # BluRay
+    # BluRay (for production use)
     # https://superuser.com/a/565999 "256MB for defect management"
     disc_size_MiB = 23841 - 256
     # DVD
@@ -159,6 +154,9 @@ class Settings:
     # -n switch turns this off
     actually_burn = True
     
+    # --no-encryption switch turns encryption off
+    no_encryption = False
+    
     # Optical disc handling settings (Linux-only)
     use_optical_automation = False  # Enable optical disc automation
     optical_device = '/dev/sr0'
@@ -166,6 +164,18 @@ class Settings:
     optical_auto_continue = False  # Auto-continue when valid disc inserted
     optical_force_overwrite = False  # Force overwrite non-blank discs
     optical_no_overwrite = False  # Reject non-blank discs
+
+
+def detect_optical_devices():
+    """
+    Auto-detect available optical drives on the system.
+    
+    Returns:
+        List of device paths (e.g., ['/dev/sr0', '/dev/sr1']) or empty list if none found.
+    """
+    import glob
+    devices = sorted(glob.glob('/dev/sr[0-9]*'))
+    return devices if devices else []
 
 
 
@@ -346,13 +356,26 @@ class Darbrrb:
         progargs = []
         for o, v in self.progopts:
             if v:
-                progargs.extend(o, v)
+                progargs.extend([o, v])
             else:
                 progargs.append(o)
+        
+        # Conditional encryption settings
+        if self.settings.no_encryption:
+            encryption_settings = "# Encryption disabled via --no-encryption"
+        else:
+            encryption_settings = """# make crypto block size larger to reduce 
+# likelihood of duplicate ciphertext
+--crypto-block 131072
+# DO NOT specify the AES key here: this script is burned on every
+# backup disc, in the clear
+--key aes:"""
+        
         return darrc_template.format(settings=self.settings,
                 progname=os.path.join(self.settings.scratch_dir, 
                         os.path.basename(self.progname)),
-                progargs=' '.join(progargs))
+                progargs=' '.join(progargs),
+                encryption_settings=encryption_settings)
 
     def readme(self, basename):
         if 'DARBRRB_ORIGINAL_ARGV' in os.environ:
@@ -426,13 +449,14 @@ About the files that may be on this disc:
     def dar(self, *args):
         # Perhaps darrc files can be non-ascii, but we haven't got any
         # non-ascii arguments to give here, so we'll stay on the safe side.
-        indented_contents = self.darrc_contents.replace('\n', '\n        ')
+        darrc_text = self.darrc_contents
+        indented_contents = darrc_text.replace('\n', '\n        ')
         with open(os.path.join(self.settings.scratch_dir, 'darrc'),
                   'w', encoding='ascii') as darrc_file:
             self.log.info("""Contents of {name} follow:
 {indented}
 """.format(name=darrc_file.name, indented=indented_contents))
-            darrc_file.write(self.darrc_contents)
+            darrc_file.write(darrc_text)
             darrc_file.flush()
             # causes of this working_directory:
             # 1. when dar makes files, it will make them in the scratch_dir
@@ -554,6 +578,11 @@ About the files that may be on this disc:
         self._copy(self.progname,
                    os.path.join(self.settings.scratch_dir,
                                 os.path.basename(self.progname)))
+        # also copy optical.py if it exists (for optical automation)
+        optical_module = os.path.join(os.path.dirname(self.progname), 'optical.py')
+        if os.path.exists(optical_module):
+            self._copy(optical_module,
+                      os.path.join(self.settings.scratch_dir, 'optical.py'))
 
     def _par_filename(self, basename, min_number, max_number):
         parformat = "{{}}.{0}-{0}.par".format(self.settings.number_format)
@@ -565,11 +594,14 @@ About the files that may be on this disc:
             raise ValueError('no dar slices for parchive to operate on')
         min_number = max_number - nslices + 1
         parfilename = self._par_filename(basename, min_number, max_number)
-        self._run(*(['parchive',
+        # par2 syntax: par2 create -n<num_recovery_files> <parfile> <datafiles>
+        # par2 will create parfilename.par2 as the index file
+        self._run(*(['par2', 'create',
                      f'-n{self.settings.parity_discs}',
-                     'a', parfilename,
+                     parfilename,
                 ] + dar_files))
-        return parfilename
+        # Return the actual .par2 index filename that was created
+        return parfilename + '.par2'
 
     def burn(self, basename, slice_number, disc_in_set_number, dir, happening):
         if self.settings.actually_burn:
@@ -1565,13 +1597,15 @@ been burned. (This can use much more scratch space.)
                         help="don't actually burn discs")
     parser.add_argument('-t', action='store_true',
                         help='run tests')
+    parser.add_argument('--no-encryption', action='store_true',
+                        help='disable encryption (for testing)')
     
     # Optical disc automation arguments (Linux-only)
     optical_group = parser.add_argument_group('optical disc automation (Linux only)')
     optical_group.add_argument('--optical', action='store_true',
                               help='enable optical disc automation')
     optical_group.add_argument('--optical-device', default='/dev/sr0',
-                              help='optical drive device (default: /dev/sr0)')
+                              help='optical drive device (default: /dev/sr0, auto-detected if not present)')
     optical_group.add_argument('--optical-mountpoint', default='/mnt/darbrrb_disc',
                               help='disc mount point (default: /mnt/darbrrb_disc)')
     optical_group.add_argument('--auto-continue', action='store_true',
@@ -1614,10 +1648,26 @@ been burned. (This can use much more scratch space.)
             print('\n')
         sleep(5)
     
+    # Handle --no-encryption flag
+    if args.no_encryption:
+        s.no_encryption = True
+    
     # Handle optical disc automation flags
     if hasattr(args, 'optical') and args.optical:
         s.use_optical_automation = True
-        s.optical_device = args.optical_device
+        
+        # Auto-detect optical device if using default and device doesn't exist
+        if args.optical_device == '/dev/sr0' and not os.path.exists('/dev/sr0'):
+            available_devices = detect_optical_devices()
+            if available_devices:
+                s.optical_device = available_devices[0]
+                print(f"Auto-detected optical device: {s.optical_device}", file=sys.stderr)
+            else:
+                print("Warning: No optical devices detected on system", file=sys.stderr)
+                s.optical_device = args.optical_device  # Keep default anyway
+        else:
+            s.optical_device = args.optical_device
+            
         s.optical_mountpoint = args.optical_mountpoint
         # auto_continue is enabled only if --auto-continue is specified AND --manual-continue is not
         s.optical_auto_continue = args.auto_continue and not args.manual_continue
@@ -1644,6 +1694,18 @@ been burned. (This can use much more scratch space.)
             opts.append(('-v', ''))
     if args.n:
         opts.append(('-n', ''))
+    if s.no_encryption:
+        opts.append(('--no-encryption', ''))
+    if s.use_optical_automation:
+        opts.append(('--optical', ''))
+        opts.append(('--optical-device', s.optical_device))
+        opts.append(('--optical-mountpoint', s.optical_mountpoint))
+        if s.optical_auto_continue:
+            opts.append(('--auto-continue', ''))
+        if s.optical_force_overwrite:
+            opts.append(('--force-overwrite', ''))
+        if s.optical_no_overwrite:
+            opts.append(('--no-overwrite', ''))
     
     # style only influences how format is interpreted, not also how values are
     # interpolated into log messages. source: Python 3.2
