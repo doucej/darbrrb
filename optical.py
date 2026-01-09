@@ -56,7 +56,7 @@ class OpticalDiscHandler:
     
     METADATA_FILENAME = ".darbrrb_metadata.json"
     DEFAULT_DEVICE = "/dev/sr0"
-    DEFAULT_MOUNTPOINT = "/mnt/darbrrb_disc"
+    DEFAULT_MOUNTPOINT = "/tmp/darbrrb_disc"
     
     def __init__(
         self,
@@ -260,27 +260,79 @@ class OpticalDiscHandler:
             backup_set_id=backup_set_id
         )
     
-    def format_disc(self) -> bool:
+    def format_disc(self, skip_blank: bool = False) -> bool:
         """
-        Format a blank BD-RE disc with UDF filesystem.
+        Format a BD-RE disc with UDF filesystem.
         
-        Uses mkudffs with --media-type=bd-re.
+        First blanks the disc using dvd+rw-format (unless skip_blank=True), 
+        then formats with mkudffs.
+        
+        Args:
+            skip_blank: Skip the blanking step (for already blank discs)
         
         Returns:
             True if formatting was successful, False otherwise.
         """
         self.log.info(f"Formatting disc in {self.device} with UDF filesystem")
         
+        # First, blank the disc if needed (for BD-RE)
+        # BD-RE blanking can take 30-60+ minutes depending on disc and drive
+        if not skip_blank:
+            blank_start = time.time()
+            try:
+                self.log.info("Blanking BD-RE disc (this may take 30-60 minutes)...")
+                result = subprocess.run(
+                    ['dvd+rw-format', '-blank', self.device],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=7200  # 2 hours to handle slow drives
+                )
+                blank_duration = time.time() - blank_start
+                
+                # If blanking completed very quickly, disc was likely already blank
+                if blank_duration < 10:
+                    self.log.info(f"Blanking completed quickly ({blank_duration:.1f}s) - disc was likely already blank")
+                else:
+                    self.log.info(f"Disc blanked successfully in {blank_duration:.1f} seconds")
+                    
+                    # Allow the drive to settle after long blanking operation
+                    self.log.info("Waiting for drive to settle after blanking...")
+                    time.sleep(10)
+                
+            except subprocess.CalledProcessError as e:
+                self.log.error(f"Blanking failed: {e.stderr}")
+                return False
+            except FileNotFoundError:
+                self.log.warning("dvd+rw-format not found, skipping blank step")
+            except subprocess.TimeoutExpired:
+                self.log.error("Blanking timed out after 2 hours")
+                return False
+        else:
+            self.log.info("Skipping blank step (disc already blank)")
+        
+        # Now format with UDF 2.01 (Linux kernel write support limited to 1.02-2.01)
+        # Use dvdram media type to force UDF 2.01 instead of 2.50 required for bdr
         try:
-            # Format with mkudffs
+            self.log.info("Creating UDF 2.01 filesystem (Linux-writable)...")
             subprocess.run(
-                ['mkudffs', '--media-type=bd-re', self.device],
+                ['mkudffs', '--media-type=dvdram', '--udfrev=2.01', '--label=darbrrb_backup', self.device],
                 check=True,
                 capture_output=True,
                 text=True,
                 timeout=300
             )
             self.log.info("Disc formatted successfully")
+            
+            # Wait a moment for the system to recognize the new filesystem
+            self.log.info("Waiting for filesystem to settle...")
+            time.sleep(3)
+            
+            # Eject and reload the disc so the system recognizes the new filesystem
+            self.log.info("Reloading disc...")
+            subprocess.run(['eject', '-t', self.device], capture_output=True, timeout=10)
+            time.sleep(2)
+            
             return True
         except subprocess.CalledProcessError as e:
             self.log.error(f"Formatting failed: {e.stderr}")
@@ -292,69 +344,66 @@ class OpticalDiscHandler:
             self.log.error("Formatting timed out after 5 minutes")
             return False
     
-    def mount_disc(self, read_only: bool = False) -> bool:
+    def mount_disc(self, read_only: bool = False, retries: int = 5) -> bool:
         """
-        Mount the disc to the configured mountpoint.
+        Mount the UDF disc using udisksctl.
         
         Args:
-            read_only: Mount the disc as read-only
+            read_only: Mount the disc as read-only (note: udisksctl ignores this)
+            retries: Number of times to retry mounting (for UDF detection issues)
             
         Returns:
             True if mounting was successful, False otherwise.
         """
-        self.log.info(f"Mounting {self.device} to {self.mountpoint}")
+        self.log.info(f"Mounting {self.device}")
         
-        # Create mountpoint if it doesn't exist
-        try:
-            self.mountpoint.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            self.log.error(f"Failed to create mountpoint: {e}")
-            return False
-        
-        # Check if mountpoint is already in use
-        try:
-            result = subprocess.run(
-                ['mountpoint', '-q', str(self.mountpoint)],
-                capture_output=True
-            )
-            if result.returncode == 0:
-                self.log.warning(f"{self.mountpoint} is already a mountpoint")
-                return True  # Already mounted
-        except FileNotFoundError:
-            # mountpoint command not available, proceed anyway
-            pass
-        
-        # Mount the disc
+        # udisksctl mounts to /media/username/label automatically
         mount_opts = ['-o', 'ro'] if read_only else []
-        try:
-            subprocess.run(
-                ['mount'] + mount_opts + [self.device, str(self.mountpoint)],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            self.log.info(f"Disc mounted successfully at {self.mountpoint}")
-            return True
-        except subprocess.CalledProcessError as e:
-            self.log.error(f"Mounting failed: {e.stderr}")
-            return False
-        except subprocess.TimeoutExpired:
-            self.log.error("Mounting timed out")
-            return False
+        
+        for attempt in range(retries):
+            try:
+                result = subprocess.run(
+                    ['udisksctl', 'mount', '-b', self.device] + mount_opts,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                # Parse the actual mount point from output: "Mounted /dev/sr0 at /media/..."
+                if "at " in result.stdout:
+                    actual_mount = result.stdout.split("at ")[-1].strip()
+                    self.log.info(f"Disc mounted at {actual_mount}")
+                    # Update our mountpoint to match where it was actually mounted
+                    self.mountpoint = Path(actual_mount)
+                else:
+                    self.log.info(f"Disc mounted successfully")
+                return True
+            except subprocess.CalledProcessError as e:
+                if attempt < retries - 1:
+                    delay = 3 * (attempt + 1)  # 3, 6, 9, 12, 15 seconds
+                    self.log.warning(f"Mount attempt {attempt+1} failed, retrying in {delay}s: {e.stderr.strip()}")
+                    time.sleep(delay)
+                else:
+                    self.log.error(f"Mounting failed after {retries} attempts: {e.stderr}")
+                    return False
+            except subprocess.TimeoutExpired:
+                self.log.error("Mounting timed out")
+                return False
+        
+        return False
     
     def unmount_disc(self) -> bool:
         """
-        Unmount the disc from the configured mountpoint.
+        Unmount the disc using udisksctl.
         
         Returns:
             True if unmounting was successful, False otherwise.
         """
-        self.log.info(f"Unmounting {self.mountpoint}")
+        self.log.info(f"Unmounting {self.device}")
         
         try:
             subprocess.run(
-                ['umount', str(self.mountpoint)],
+                ['udisksctl', 'unmount', '-b', self.device],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -372,6 +421,7 @@ class OpticalDiscHandler:
     def validate_disc_for_backup(
         self, 
         backup_set_id: str,
+        disc_title: str = None,
         allow_prompt: bool = True
     ) -> bool:
         """
@@ -381,12 +431,13 @@ class OpticalDiscHandler:
         
         Args:
             backup_set_id: The ID of the current backup set
+            disc_title: Full disc title with set/disc numbers (e.g., "backup-0001-002")
             allow_prompt: Allow prompting the user for decisions
             
         Returns:
             True if the disc is valid and ready to use, False otherwise.
         """
-        self.log.info(f"Validating disc for backup set: {backup_set_id}")
+        self.log.info(f"Validating disc for backup set: {backup_set_id}, disc: {disc_title or 'unknown'}")
         
         state = self.detect_disc_state()
         
@@ -397,12 +448,12 @@ class OpticalDiscHandler:
         # Handle blank discs
         if state.is_blank:
             self.log.info("Disc is blank, will format")
-            if not self.format_disc():
+            if not self.format_disc(skip_blank=True):
                 return False
             if not self.mount_disc():
                 return False
             # Write metadata
-            self._write_metadata(backup_set_id)
+            self._write_metadata(backup_set_id, disc_title)
             return True
         
         # Handle discs with existing backup set
@@ -422,10 +473,10 @@ class OpticalDiscHandler:
                 
                 if self.force_overwrite:
                     self.log.warning("Overwriting disc (--force-overwrite specified)")
-                    return self._overwrite_and_prepare(backup_set_id)
+                    return self._overwrite_and_prepare(backup_set_id, disc_title)
                 
                 if allow_prompt:
-                    return self._prompt_overwrite(backup_set_id)
+                    return self._prompt_overwrite(backup_set_id, disc_title)
                 else:
                     self.log.error("Cannot prompt user and no overwrite flag set")
                     return False
@@ -439,20 +490,28 @@ class OpticalDiscHandler:
         
         if self.force_overwrite:
             self.log.warning("Overwriting disc (--force-overwrite specified)")
-            return self._overwrite_and_prepare(backup_set_id)
+            return self._overwrite_and_prepare(backup_set_id, disc_title)
         
         if allow_prompt:
-            return self._prompt_overwrite(backup_set_id)
+            return self._prompt_overwrite(backup_set_id, disc_title)
         else:
             self.log.error("Cannot prompt user and no overwrite flag set")
             return False
     
-    def _write_metadata(self, backup_set_id: str) -> None:
-        """Write backup set metadata to the mounted disc."""
+    def _write_metadata(self, backup_set_id: str, disc_title: str = None) -> None:
+        """
+        Write backup set metadata to the mounted disc.
+        
+        Args:
+            backup_set_id: The backup set identifier (e.g., "test_backup")
+            disc_title: Full disc title with set/disc numbers (e.g., "test_backup-0001-002")
+        """
         metadata = {
             'backup_set_id': backup_set_id,
+            'disc_title': disc_title or backup_set_id,
             'created': time.strftime('%Y-%m-%d %H:%M:%S'),
-            'tool': 'darbrrb'
+            'tool': 'darbrrb',
+            'format_version': '1.0'
         }
         
         metadata_path = self.mountpoint / self.METADATA_FILENAME
@@ -463,22 +522,28 @@ class OpticalDiscHandler:
         except Exception as e:
             self.log.error(f"Failed to write metadata: {e}")
     
-    def _overwrite_and_prepare(self, backup_set_id: str) -> bool:
-        """Overwrite the disc and prepare it for backup."""
+    def _overwrite_and_prepare(self, backup_set_id: str, disc_title: str = None) -> bool:
+        """
+        Overwrite the disc and prepare it for backup.
+        
+        Args:
+            backup_set_id: The backup set identifier
+            disc_title: Full disc title with set/disc numbers
+        """
         if not self.format_disc():
             return False
         if not self.mount_disc():
             return False
-        self._write_metadata(backup_set_id)
+        self._write_metadata(backup_set_id, disc_title)
         return True
     
-    def _prompt_overwrite(self, backup_set_id: str) -> bool:
+    def _prompt_overwrite(self, backup_set_id: str, disc_title: str = None) -> bool:
         """Prompt the user whether to overwrite the disc."""
         while True:
             response = input("Disc contains existing data. Overwrite? [y/N]: ").strip().lower()
             if response in ['y', 'yes']:
                 self.log.info("User confirmed overwrite")
-                return self._overwrite_and_prepare(backup_set_id)
+                return self._overwrite_and_prepare(backup_set_id, disc_title)
             elif response in ['n', 'no', '']:
                 self.log.info("User rejected overwrite")
                 return False

@@ -53,7 +53,7 @@ class Settings:
 # SCRATCH_DIR must have (DATA_DISCS + PARITY_DISCS) * DISC_SIZE mebibytes free
 # to run backup. SCRATCH_DIR must not exist when this script is run.
 # SCRATCH_DIR must not be a subdirectory of the directory being backed up.
-    scratch_dir = '/home/tmp/backup_scratch'
+    scratch_dir = '/tmp/backup_scratch'  # For optical: size = slice_size * (data_discs + parity_discs)
 
 # This ballpark figure is used to calculate the number of digits to
 # use when numbering archive slices.
@@ -61,18 +61,18 @@ class Settings:
 
 # Each redundancy set is composed of (DATA_DISCS + PARITY_DISCS) discs.
 # These are like hard disk shelves with RAID, but with discs instead.
-    data_discs = 3
-    parity_discs = 2
+    data_discs = 1
+    parity_discs = 0  # Test: no parity for single-disc test (production: 2)
 
 # How many slices should be on each disc? I/O errors caused by media
 # decay can truncate a slice; PAR1 then can't use the whole file. So
 # let's be slightly wasteful.
-    slices_per_disc = 500
+    slices_per_disc = 10
 
 # How much space is on a disc?
     # BluRay (for production use)
     # https://superuser.com/a/565999 "256MB for defect management"
-    disc_size_MiB = 23841 - 256
+    disc_size_MiB = 23585  # Production: 23841 - 256 for defect management
     # DVD
     ## disc_size_MiB = 4482
     # CD-R
@@ -160,7 +160,7 @@ class Settings:
     # Optical disc handling settings (Linux-only)
     use_optical_automation = False  # Enable optical disc automation
     optical_device = '/dev/sr0'
-    optical_mountpoint = '/mnt/darbrrb_disc'
+    optical_mountpoint = '/tmp/darbrrb_disc'
     optical_auto_continue = False  # Auto-continue when valid disc inserted
     optical_force_overwrite = False  # Force overwrite non-blank discs
     optical_no_overwrite = False  # Reject non-blank discs
@@ -256,7 +256,7 @@ Switches:
 Optical disc automation (Linux only, currently {'available' if OPTICAL_AVAILABLE else 'not available'}):
   --optical             Enable automated disc handling
   --optical-device      Device path (default: /dev/sr0)
-  --optical-mountpoint  Mount point (default: /mnt/darbrrb_disc)
+  --optical-mountpoint  Mount point (default: /tmp/darbrrb_disc)
   --auto-continue       Auto-continue when valid disc inserted
   --manual-continue     Always prompt before continuing (default)
   --force-overwrite     Automatically overwrite non-blank discs
@@ -371,9 +371,15 @@ class Darbrrb:
 # backup disc, in the clear
 --key aes:"""
         
+        # For optical mode, script is on the disc; for traditional mode, it's in scratch
+        if self.optical_handler and self.optical_handler.mountpoint:
+            script_path = str(self.optical_handler.mountpoint / os.path.basename(self.progname))
+        else:
+            script_path = os.path.join(self.settings.scratch_dir, 
+                                      os.path.basename(self.progname))
+        
         return darrc_template.format(settings=self.settings,
-                progname=os.path.join(self.settings.scratch_dir, 
-                        os.path.basename(self.progname)),
+                progname=script_path,
                 progargs=' '.join(progargs),
                 encryption_settings=encryption_settings)
 
@@ -451,26 +457,37 @@ About the files that may be on this disc:
         # non-ascii arguments to give here, so we'll stay on the safe side.
         darrc_text = self.darrc_contents
         indented_contents = darrc_text.replace('\n', '\n        ')
-        with open(os.path.join(self.settings.scratch_dir, 'darrc'),
-                  'w', encoding='ascii') as darrc_file:
+        
+        # Determine working directory:
+        # - For optical mode: use mounted disc directly (no scratch needed!)
+        # - For traditional mode: use scratch directory
+        if self.optical_handler and self.optical_handler.mountpoint:
+            work_dir = str(self.optical_handler.mountpoint)
+            darrc_path = os.path.join(work_dir, 'darrc')
+            self.log.info(f"Using optical disc for dar output: {work_dir}")
+        else:
+            work_dir = self.settings.scratch_dir
+            darrc_path = os.path.join(work_dir, 'darrc')
+        
+        with open(darrc_path, 'w', encoding='ascii') as darrc_file:
             self.log.info("""Contents of {name} follow:
 {indented}
 """.format(name=darrc_file.name, indented=indented_contents))
             darrc_file.write(darrc_text)
             darrc_file.flush()
             # causes of this working_directory:
-            # 1. when dar makes files, it will make them in the scratch_dir
+            # 1. when dar makes files, it will make them in work_dir
             # 2. when dar calls this script, the _create and other methods
-            #    below will have scratch_dir as their cwd.
-            with working_directory(self.settings.scratch_dir):
+            #    below will have work_dir as their cwd.
+            with working_directory(work_dir):
                 self._run('dar', *(args + ('-B', darrc_file.name)))
 
-    def wait_for_empty_disc(self, basename='backup'):
+    def wait_for_empty_disc(self, basename='backup', slice_number=None, disc_in_set_number=None):
         """
         Wait for an empty disc to be inserted.
         
-        If optical automation is enabled, automatically handles disc ejection,
-        detection, formatting, and validation. Otherwise, prompts the user.
+        If optical automation is enabled, automatically handles disc detection,
+        formatting, and validation. Otherwise, prompts the user.
         
         Args:
             basename: The backup set basename for metadata tracking
@@ -482,7 +499,14 @@ About the files that may be on this disc:
         if self.optical_handler:
             self.log.info("Using optical disc automation")
             
-            # Eject any existing disc
+            # First, try to validate the current disc without ejecting
+            # (in case there's already a suitable disc inserted)
+            if self.optical_handler.validate_disc_for_backup(basename):
+                self.log.info("Current disc is valid, using it")
+                return
+            
+            # If current disc is not valid, eject it and wait for a new one
+            self.log.info("Current disc not suitable, ejecting")
             self.optical_handler.eject_disc()
             
             # Wait for disc insertion
@@ -565,6 +589,12 @@ About the files that may be on this disc:
                                         free_space_MiB)
 
     def ensure_scratch(self):
+        # For optical mode, we write directly to disc - minimal/no scratch needed
+        if self.optical_handler:
+            self.log.info("Optical mode: skipping scratch directory creation")
+            return
+            
+        # Traditional mode: create full scratch directory structure
         if os.path.exists(self.settings.scratch_dir):
             if not os.path.isdir(self.settings.scratch_dir):
                 raise ScratchAlreadyExists()
@@ -604,16 +634,27 @@ About the files that may be on this disc:
         return parfilename + '.par2'
 
     def burn(self, basename, slice_number, disc_in_set_number, dir, happening):
+        disc_title = self.disc_title_for_slice_and_disc(basename, slice_number,
+                                                         disc_in_set_number)
+        
         if self.settings.actually_burn:
-            self._run('growisofs', '-Z', self.settings.burner_device,
-                      '-R', '-J', '-V',
-                      self.disc_title_for_slice_and_disc(basename, slice_number,
-                                                         disc_in_set_number),
-                      dir)
+            # Use optical automation with UDF if available
+            if self.optical_handler:
+                self.log.info(f"Copying files to UDF disc: {disc_title}")
+                # Files should already be on the disc via dar's -E option
+                # Just verify the mountpoint has files
+                if not self.optical_handler.mountpoint:
+                    self.log.error("Disc not mounted for optical burn")
+                    return
+                
+                disc_files = list(self.optical_handler.mountpoint.glob('*'))
+                self.log.info(f"Disc contains {len(disc_files)} files")
+            else:
+                # Traditional growisofs burn to ISO9660
+                self._run('growisofs', '-Z', self.settings.burner_device,
+                          '-R', '-J', '-V', disc_title, dir)
         else:
-            destination = os.path.join(self.settings.scratch_dir,
-                    self.disc_title_for_slice_and_disc(basename, slice_number,
-                                                       disc_in_set_number))
+            destination = os.path.join(self.settings.scratch_dir, disc_title)
             self.log.info(f'not actually burning: moving files from {dir} to '
                     f'{destination}')
             os.mkdir(destination)
@@ -622,6 +663,20 @@ About the files that may be on this disc:
 
     def _create(self, dir, basename, number, extension, happening):
         number = int(number)
+        
+        # For optical mode, files are already on the disc - minimal work needed
+        if self.optical_handler and self.optical_handler.mountpoint:
+            self.log.info(f"Slice {number} written directly to disc ({happening})")
+            
+            # On last slice, write README
+            if happening == 'last_slice':
+                disc_path = self.optical_handler.mountpoint
+                with open(disc_path / 'README.txt', 'wt') as readme:
+                    readme.write(self.readme(basename))
+                self.log.info("Backup complete on disc")
+            return
+        
+        # Traditional mode with scratch directory and parity
         # note: dar has caused this function to be called; dar's cwd is
         # SCRATCH_DIR, hence so is ours
         dar_files_here = sorted(glob.glob('*.dar'))
@@ -655,7 +710,7 @@ About the files that may be on this disc:
                 happening == 'last_slice':
             for i, d in enumerate(self.disc_dirs()):
                 self.log.info(f"burning from {d}")
-                self.wait_for_empty_disc(basename)
+                self.wait_for_empty_disc(basename, number, i)
                 self.burn(basename, number, i, d, happening)
                 
                 # Eject disc after successful burn if using optical automation
@@ -1606,8 +1661,8 @@ been burned. (This can use much more scratch space.)
                               help='enable optical disc automation')
     optical_group.add_argument('--optical-device', default='/dev/sr0',
                               help='optical drive device (default: /dev/sr0, auto-detected if not present)')
-    optical_group.add_argument('--optical-mountpoint', default='/mnt/darbrrb_disc',
-                              help='disc mount point (default: /mnt/darbrrb_disc)')
+    optical_group.add_argument('--optical-mountpoint', default='/tmp/darbrrb_disc',
+                              help='disc mount point (default: /tmp/darbrrb_disc)')
     optical_group.add_argument('--auto-continue', action='store_true',
                               help='automatically continue when valid disc inserted')
     optical_group.add_argument('--manual-continue', action='store_true',
@@ -1735,6 +1790,35 @@ been burned. (This can use much more scratch space.)
             os.environ['DARBRRB_ORIGINAL_ARGV'] = base64.b64encode(
                 pickle.dumps(sys.argv, protocol=0)).decode('UTF-8')
             d.ensure_scratch()
+            
+            # For optical mode, prepare disc and copy scripts before running dar
+            if d.optical_handler:
+                # Extract basename from dar arguments (should be after '-c')
+                try:
+                    c_index = args.remaining.index('-c')
+                    basename = args.remaining[c_index + 1]
+                except (ValueError, IndexError):
+                    basename = 'backup'
+                
+                d.log.info("Preparing optical disc for backup")
+                d.wait_for_empty_disc(basename, 1, 0)  # First slice, first disc
+                
+                # Copy scripts to disc now so dar's -E callbacks can find them
+                if d.optical_handler.mountpoint:
+                    disc_path = d.optical_handler.mountpoint
+                    d.log.info(f"Copying scripts to disc at {disc_path}")
+                    
+                    # Copy main script
+                    this_program = os.path.basename(d.progname)
+                    d._copy(d.progname, str(disc_path / this_program))
+                    
+                    # Copy optical.py if it exists
+                    optical_module = os.path.join(os.path.dirname(d.progname), 'optical.py')
+                    if os.path.exists(optical_module):
+                        d._copy(optical_module, str(disc_path / 'optical.py'))
+                    
+                    d.log.info("Scripts copied to disc")
+            
             d.dar(*args.remaining)
         elif args.command == '_create':
             d._create(*args.remaining)

@@ -28,7 +28,7 @@ class TestOpticalDiscHandler(unittest.TestCase):
         """Test initialization with default values."""
         handler = OpticalDiscHandler()
         self.assertEqual(handler.device, '/dev/sr0')
-        self.assertEqual(handler.mountpoint, Path('/mnt/darbrrb_disc'))
+        self.assertEqual(handler.mountpoint, Path('/tmp/darbrrb_disc'))
         self.assertFalse(handler.auto_continue)
         self.assertFalse(handler.force_overwrite)
         self.assertFalse(handler.no_overwrite)
@@ -193,27 +193,27 @@ class TestOpticalDiscHandler(unittest.TestCase):
         self.assertEqual(state.filesystem, 'udf')
     
     @patch('subprocess.run')
-    @patch('os.path.exists')
-    def test_format_disc_success(self, mock_exists, mock_run):
+    @patch('time.time')
+    def test_format_disc_success(self, mock_time, mock_run):
         """Test successful disc formatting."""
-        mock_exists.return_value = True
+        mock_time.return_value = 100.0
         mock_run.return_value = subprocess.CompletedProcess(
-            args=['mkudffs', '--media-type=bd-re', '/dev/sr0'],
+            args=['mkudffs'],
             returncode=0,
             stdout='',
             stderr=''
         )
         
-        result = self.handler.format_disc()
+        result = self.handler.format_disc(skip_blank=True)
         
         self.assertTrue(result)
-        mock_run.assert_called_with(
-            ['mkudffs', '--media-type=bd-re', '/dev/sr0'],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
+        # Check that mkudffs was called with correct parameters
+        calls = mock_run.call_args_list
+        mkudffs_call = [c for c in calls if 'mkudffs' in str(c)]
+        self.assertEqual(len(mkudffs_call), 1)
+        self.assertIn('--media-type=dvdram', str(mkudffs_call[0]))
+        self.assertIn('--udfrev=2.01', str(mkudffs_call[0]))
+        self.assertIn('--label=darbrrb_backup', str(mkudffs_call[0]))
     
     @patch('subprocess.run')
     def test_format_disc_failure(self, mock_run):
@@ -271,7 +271,7 @@ class TestOpticalDiscHandler(unittest.TestCase):
     def test_unmount_disc_success(self, mock_run):
         """Test successful disc unmounting."""
         mock_run.return_value = subprocess.CompletedProcess(
-            args=['umount', '/mnt/test_disc'],
+            args=['udisksctl', 'unmount', '-b', '/dev/sr0'],
             returncode=0,
             stdout='',
             stderr=''
@@ -281,7 +281,7 @@ class TestOpticalDiscHandler(unittest.TestCase):
         
         self.assertTrue(result)
         mock_run.assert_called_with(
-            ['umount', '/mnt/test_disc'],
+            ['udisksctl', 'unmount', '-b', '/dev/sr0'],
             check=True,
             capture_output=True,
             text=True,
@@ -371,7 +371,7 @@ class TestOpticalDiscHandler(unittest.TestCase):
         result = self.handler.validate_disc_for_backup('test-backup-123')
         
         self.assertTrue(result)
-        mock_overwrite.assert_called_once_with('test-backup-123')
+        mock_overwrite.assert_called_once_with('test-backup-123', None)
     
     @patch('builtins.input')
     @patch('optical.OpticalDiscHandler._overwrite_and_prepare')
